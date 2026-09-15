@@ -827,7 +827,12 @@ void fe_updated(const struct site_file *file, int success, const char *error)
 {
     char wrap = error && strlen(error) < 30 ? ' ' : '\n';
 
-    upload_sofar += file->local.size;
+    /* Progress must stay in step with upload_total, which counts only
+     * changed and new files; moves, deletions and the pre-upload
+     * delete of nooverwrite mode must not advance the counter. */
+    if (file->diff == file_changed || file->diff == file_new) {
+	upload_sofar += file->local.size;
+    }
 
     if (quiet > 0) {
 	if (! success) {
@@ -847,6 +852,7 @@ void fe_updated(const struct site_file *file, int success, const char *error)
 	    if (show_progress) {
 		float prog = (100 * (float)upload_sofar) / (float)upload_total;
 		if (upload_total == 0) prog = 0;
+		if (prog > 100) prog = 100;
 		printf(("] done. (%.0f%% finished)\n"), prog);
 	    } else {
 		printf(_("] done.\n"));

@@ -237,6 +237,7 @@ static int init(void **session, struct site *site)
     }
 
     if (site->http_secure) {
+        ne_ssl_trust_default_ca(sess);
         if (access(site->certfile, R_OK) == 0) {
             site->server_cert = ne_ssl_cert_read(site->certfile);
             if (site->server_cert == NULL) {
@@ -244,9 +245,7 @@ static int init(void **session, struct site *site)
                              site->certfile);
                 return SITE_FAILED;
             }
-        }
-        else {
-            ne_ssl_trust_default_ca(sess);
+            ne_ssl_trust_cert(sess, site->server_cert);
         }
         ne_ssl_set_verify(sess, verify_certificate, site);
     }

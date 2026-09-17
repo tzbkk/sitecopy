@@ -1069,27 +1069,16 @@ static int fetch_checksum_file(struct proto_file *file,
     return ret;
 }
     
-/* Updates the remote file list... site_fetch_callback is called for
- * every remote file found.
- */
-int site_fetch(struct site *site)
+/* Walk the whole remote file tree below the site remote root using
+ * the fetch_list driver callback, and return a flat list of files
+ * with filenames relative to the remote root.  Subdirectories of
+ * paths matching an exclude pattern are not descended into. */
+static int fetch_walk(struct site *site, void *session,
+		      struct proto_file **files)
 {
-    int ret, need_modtimes;
-    void *session;
     const char *dirstack[DIRSTACKSIZE];
     size_t dirtop;
-    struct proto_file *files = NULL;
-
-    ret = proto_init(site, &session);
-    if (ret != SITE_OK) {
-	proto_finish(site, session);
-	return ret;
-    }
-
-    if (CALL(fetch_list) == NULL) {
-	proto_finish(site, session);
-	return SITE_UNSUPPORTED;
-    }
+    int ret, need_modtimes;
 
     /* The remote modtimes are needed if timesize is used or in safe
      * mode: */
@@ -1097,6 +1086,8 @@ int site_fetch(struct site *site)
 
     dirtop = 1;
     dirstack[0] = "";
+
+    *files = NULL;
 
     do {
         struct proto_file *newfiles = NULL, *f, *lastf = NULL;
@@ -1129,13 +1120,38 @@ int site_fetch(struct site *site)
         }
 
         if (lastf) {
-            lastf->next = files;
-            files = newfiles;
+            lastf->next = *files;
+            *files = newfiles;
         }
 
         ne_free(curdir);
     } while (dirtop > 0);
-    
+
+    return ret;
+}
+
+/* Updates the remote file list... site_fetch_callback is called for
+ * every remote file found.
+ */
+int site_fetch(struct site *site)
+{
+    int ret;
+    void *session;
+    struct proto_file *files = NULL;
+
+    ret = proto_init(site, &session);
+    if (ret != SITE_OK) {
+	proto_finish(site, session);
+	return ret;
+    }
+
+    if (CALL(fetch_list) == NULL) {
+	proto_finish(site, session);
+	return SITE_UNSUPPORTED;
+    }
+
+    ret = fetch_walk(site, session, &files);
+
     if (ret == SITE_OK) {
         struct proto_file *f, *nextf;
 
@@ -1184,6 +1200,10 @@ static int site_verify_compare(struct site *site,
 
     for (lfile = files; lfile != NULL; lfile = lfile->next) {
 	enum file_diff diff = file_new;
+
+	if (file_isexcluded(lfile->filename, site)) {
+	    continue;
+	}
 
 	numremote--;
 	for_each_file(file, site) {
@@ -1236,16 +1256,11 @@ int site_verify(struct site *site, int *numremoved)
 	return ret;
 
     if (CALL(fetch_list) == NULL) {
+	proto_finish(site, session);
 	return SITE_UNSUPPORTED;
     }
 
-    ret = CALL(fetch_list)(session, site->remote_root, 1, &files);
-
-#if 0
-    if (site->state_method == state_checksum) {
-	site_fetch_checksum(files, site, session);
-    }
-#endif
+    ret = fetch_walk(site, session, &files);
 
     proto_finish(site, session);
     

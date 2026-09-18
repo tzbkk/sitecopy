@@ -12,11 +12,13 @@ locally.
 
 import os
 import socket
+import subprocess
 import threading
 
 import pytest
 
 from common import run_sitecopy
+from ftp_server import ScriptedFTPServer as RecordingFTPServer
 
 HOST = "127.0.0.1"
 PORT_RANGE = range(22070, 22080)
@@ -192,3 +194,69 @@ def test_fetch_normal_filename(ftp_site):
         assert "File: index.html - size 15360" in res.stdout
     finally:
         REMOTE_FILES[" 2003.doc"] = {"size": 2048, "mtime": "20030828220517"}
+
+
+# Tests for the FTP driver against a server which truncates long
+# path names (Debian bug #761056), using the recording scripted
+# server in ftp_server.py.
+def run_sc(senv, args):
+    cmd = ["./sitecopy", "--rcfile", str(senv["rcfile"]),
+           "--storepath", str(senv["store"])] + args
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+
+def make_site_env(tmp_path, port):
+    local = tmp_path / "local"
+    store = tmp_path / "store"
+    local.mkdir()
+    store.mkdir()
+    rcfile = tmp_path / ".sitecopyrc"
+    rcfile.write_text(f"""
+site testsite
+  server localhost
+    port {port}
+  username tester
+  password secret
+  remote /
+  local {local}
+  protocol ftp
+  safe
+""")
+    rcfile.chmod(0o600)
+    store.chmod(0o700)
+    return {"rcfile": rcfile, "local": local, "store": store}
+
+
+@pytest.fixture
+def ftp_env(tmp_path):
+    server = RecordingFTPServer()
+    server.start()
+    try:
+        yield make_site_env(tmp_path, server.port), server
+    finally:
+        server.stop()
+
+
+def test_ftp_upload_and_fetch(ftp_env):
+    senv, server = ftp_env
+    (senv["local"] / "hello.html").write_text("hello world\n")
+
+    res = run_sc(senv, ["--initialize", "testsite"])
+    assert res.returncode == 0, res.stdout
+
+    res = run_sc(senv, ["--update", "testsite"])
+    assert res.returncode == 0, res.stdout
+    assert "Update completed successfully" in res.stdout
+
+    assert "/hello.html" in server.files
+    assert server.files["/hello.html"]["content"] == b"hello world\n"
+
+    cmds = server.commands
+    assert ("USER", "tester") in cmds
+    assert ("STOR", "/hello.html") in cmds
+    # safe mode retrieves the modification time after uploading
+    assert ("MDTM", "/hello.html") in cmds
+
+    res = run_sc(senv, ["--fetch", "testsite"])
+    assert res.returncode == 0, res.stdout
+    assert ("LIST", "/") in server.commands

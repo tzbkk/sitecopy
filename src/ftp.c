@@ -877,14 +877,39 @@ static int maybe_chdir(ftp_session *sess, const char **remotefile)
 }
 
 
+/* Having just uploaded a file, check that the server really does
+ * have a file stored under the exact requested name REMOTEFILE.
+ * Some FTP servers silently truncate over-long path names in
+ * command arguments, storing the file under a truncated name
+ * (Debian bug #761056); the upload then appears to succeed, but
+ * the file is missing under its proper name, and every subsequent
+ * update deletes and re-uploads the file, indefinitely.
+ *
+ * Returns FTP_FILEBAD if the server definitively reports no file
+ * under the given name, FTP_OK otherwise (including when the check
+ * is inconclusive). */
+static int verify_stored(ftp_session *sess, const char *remotefile)
+{
+    int ret = get_modtime(sess, remotefile);
+
+    if (ret == FTP_FILEBAD) {
+	NE_DEBUG(DEBUG_FTP, "ftp: no file stored under requested name "
+		 "`%s'\n", remotefile);
+	return FTP_FILEBAD;
+    }
+
+    return FTP_OK;
+}
+
 /* upload the given file */
 int ftp_put(ftp_session *sess, 
-	    const char *localfile, const char *remotefile, int ascii) 
+	    const char *localfile, const char *remotefile, int ascii)
 {
     int ret;
     struct stat st;
     FILE *f;
     int tries = 0, dret;
+    const char * const origfile = remotefile;
 
     /* Set the transfer type correctly */
     if (set_mode(sess, ascii?tran_ascii:tran_binary))
@@ -932,6 +957,19 @@ int ftp_put(ftp_session *sess,
             dret = dtp_close(sess, 0);
 
             if (dret == FTP_SENT && ret == 0) {
+                /* Check the file really was stored under the
+                 * requested name; fail loudly rather than marking
+                 * the file as uploaded if not. */
+                if (verify_stored(sess, origfile) == FTP_FILEBAD) {
+                    ne_snprintf(sess->error, sizeof sess->error,
+                                _("Could not upload `%s': the server "
+                                  "did not store the file under the "
+                                  "requested name; the server may have "
+                                  "truncated a long path name"),
+                                origfile);
+                    fclose(f);
+                    return FTP_ERROR;
+                }
                 fclose(f);
                 return FTP_OK;
             }
@@ -1192,11 +1230,12 @@ static int get_modtime(ftp_session *sess, const char *filename)
     if ((ret = maybe_chdir(sess, &filename)) != FTP_OK)
         return ret;
 
-    if (execute(sess, "MDTM %s", filename) == FTP_MODTIME) {
+    ret = execute(sess, "MDTM %s", filename);
+    if (ret == FTP_MODTIME) {
 	NE_DEBUG(DEBUG_FTP, "Got modtime.\n");
 	return FTP_OK;
     } else {
-	return FTP_ERROR;
+	return ret;
     }
 }
 

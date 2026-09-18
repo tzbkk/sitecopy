@@ -260,3 +260,57 @@ def test_ftp_upload_and_fetch(ftp_env):
     res = run_sc(senv, ["--fetch", "testsite"])
     assert res.returncode == 0, res.stdout
     assert ("LIST", "/") in server.commands
+
+
+# A file name longer than 79 characters; the scripted server stores
+# it truncated to 79 characters, as the server in Debian bug
+# #761056 did.
+LONG_NAME = "long" + "a" * 100 + ".html"
+TRUNCATED_NAME = LONG_NAME[:79]
+
+
+@pytest.fixture
+def truncating_ftp_env(tmp_path):
+    server = RecordingFTPServer(truncate_len=79)
+    server.start()
+    try:
+        yield make_site_env(tmp_path, server.port), server
+    finally:
+        server.stop()
+
+
+def test_ftp_truncated_upload_fails_loudly(truncating_ftp_env):
+    senv, server = truncating_ftp_env
+    (senv["local"] / LONG_NAME).write_text("payload\n")
+
+    res = run_sc(senv, ["--initialize", "testsite"])
+    assert res.returncode == 0, res.stdout
+
+    res = run_sc(senv, ["--update", "testsite"])
+    assert res.returncode != 0, (res.stdout,
+                                 "update must not report success")
+    assert "Errors occurred while updating" in res.stdout
+    assert "truncated a long path name" in res.stdout
+
+    # The server stored the file under the truncated name only.
+    assert "/" + LONG_NAME not in server.files
+    assert "/" + TRUNCATED_NAME in server.files
+
+    # The upload was verified against the exact requested name.
+    cmds = server.commands
+    first_stor = cmds.index(("STOR", "/" + LONG_NAME))
+    assert ("MDTM", "/" + LONG_NAME) in cmds[first_stor:]
+
+    res = run_sc(senv, ["--fetch", "testsite"])
+    assert res.returncode == 0, res.stdout
+
+    # No delete-and-re-upload loop: every subsequent update fails
+    # loudly too, rather than reporting success forever.
+    res = run_sc(senv, ["--update", "testsite"])
+    assert res.returncode != 0, res.stdout
+    assert "Errors occurred while updating" in res.stdout
+    assert "truncated a long path name" in res.stdout
+
+    # One upload attempt per update, no repeated churn.
+    stors = [c for c in server.commands if c == ("STOR", "/" + LONG_NAME)]
+    assert len(stors) == 2

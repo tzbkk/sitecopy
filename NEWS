@@ -1,4 +1,10 @@
 Changes in release 0.17:
+* FTP: Detect uploads which the server stores under a truncated
+  path name, and fail the update rather than silently deleting
+  and re-uploading the file on every subsequent update (Debian
+  bug #761056).
+* FTP: Apply usecwd for MDTM commands.
+* FTP: Stricter validation of EPSV responses.
 * Store state files in sorted order (Gary Benson)
 * Write state file to a temporary file (michel34)
 * Various compilation warning fixes.

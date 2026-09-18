@@ -27,6 +27,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
+#include <signal.h>
 #include <errno.h>
 
 #ifdef HAVE_STDLIB_H
@@ -130,6 +131,10 @@ static int sftp_connect(sftp_session *sess)
 #endif /* USE_PIPES */
 
     sess->connected = true;
+    /* The client inherits stderr, so flush now to ensure anything
+     * printed before the fork reaches the output stream before
+     * anything written by the client. */
+    fflush(stdout);
     sess->sftp_pid = fork();
     switch (sess->sftp_pid) {
     case -1:
@@ -148,6 +153,10 @@ static int sftp_connect(sftp_session *sess)
     }
     close(c_in);
     close(c_out);
+    /* Wait until the client has started up and is ready for commands,
+     * so that any connection-time output it writes (to the inherited
+     * stderr) is complete before sitecopy prints anything further. */
+    read_sftp(sess);
     return SITE_OK;
 }
 
@@ -245,6 +254,11 @@ static int init(void **session, struct site *site)
 {
     sftp_session *sess = ne_calloc(sizeof *sess);
     *session = sess;
+    /* The client may die before a command is written to its stdin;
+     * a SIGPIPE there would kill sitecopy before the write error
+     * can be reported as a failed transfer, so handle the dead
+     * pipe via EPIPE instead. */
+    signal(SIGPIPE, SIG_IGN);
     if (site->rcp_cmd != NULL) {
 	sess->sftp_cmd = site->rcp_cmd;
     } else {
@@ -257,8 +271,12 @@ static int init(void **session, struct site *site)
     }
     sess->site = site;
     sess->connected = false;
-    return SITE_OK;
-}    
+    /* Connect now, before the frontend begins printing progress
+     * output for the operation: the client prints connection-time
+     * messages (e.g. "Connecting to host...") on the inherited
+     * stderr, which must appear before, not amid, that output. */
+    return sftp_connect(sess);
+}
 
 static void finish(void *session)
 {

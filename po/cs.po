@@ -104,10 +104,10 @@ msgstr "inicializace"
 #: src/console_fe.c:134
 msgid ""
 "You should never see this message.\n"
-"Please contact the maintainer at sitecopy@lyra.org\n"
+"Please contact the maintainer at https://github.com/notroj/sitecopy\n"
 msgstr ""
 "Tuhle zprávu byste nemìli vidìt..\n"
-"Kontaktujte prosím správce na adrese sitecopy@lyra.org\n"
+"Kontaktujte prosím správce na adrese https://github.com/notroj/sitecopy\n"
 
 # src/console_fe.c:182
 #: src/console_fe.c:196
@@ -1078,7 +1078,7 @@ msgstr ""
 "  -h, --help            Zobraz tuto nápovìdu\n"
 "  -V, --version         Zobraz informaci o verzi programu\n"
 "Po¹lete prosím po¾adavky na vlastnosti a hlá¹ení o chybách na adresu "
-"sitecopy@lyra.org\n"
+"%s\n"
 "Pøipomínky k pøekladu posílejte na adresu prazak@grisoft.cz\n"
 
 #: src/sitestore.c:350

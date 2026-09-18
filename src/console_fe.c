@@ -365,12 +365,35 @@ static void set_action(enum action newact)
 {
     if (action != action_none) {
 	printf(_("%s: Error: Only specify ONE operation mode at a time.\n"),
-		progname);
+	       progname);
 	printf(_("Try `%s --help' for more information.\n"), progname);
 	exit(-1);
     } else {
 	action = newact;
     }
+}
+
+/* Expand a leading "~/" or "$HOME"/"${HOME}" prefix in the given
+ * filename, which the shell does not necessarily expand in
+ * command-line arguments.  Returns an allocated string. */
+static char *expand_home_prefix(const char *filename)
+{
+    const char *home = getenv("HOME");
+    const char *rest = NULL;
+
+    if (strncmp(filename, "$HOME/", 6) == 0) {
+	rest = filename + 5;
+    } else if (strncmp(filename, "${HOME}", 7) == 0) {
+	rest = filename + 7;
+    } else if (filename[0] == '~' && filename[1] == '/') {
+	rest = filename + 1;
+    }
+
+    if (rest == NULL || home == NULL) {
+	return ne_strdup(filename);
+    }
+
+    return ne_concat(home, rest, NULL);
 }
 
 static void parse_cmdline(int argc, char *argv[])
@@ -460,7 +483,7 @@ static void parse_cmdline(int argc, char *argv[])
 	case 'q': quiet++; break;
 	case 'r': 
 	    if (strlen(optarg) != 0) {
-		rcfile = ne_strdup(optarg);
+		rcfile = expand_home_prefix(optarg);
 	    } else {
 		usage();
 		exit(-1);

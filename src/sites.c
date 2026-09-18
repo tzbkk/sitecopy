@@ -89,28 +89,93 @@ struct site *site_find(const char *sitename)
     return NULL;
 }
 
+/* Order two filenames by path depth (number of separators), so that
+ * a parent directory always sorts before its children. */
+static int compare_dir_depth(const char *fn1, const char *fn2)
+{
+    int depth1 = 0, depth2 = 0;
+    const char *pnt;
+
+    for (pnt = fn1; *pnt != '\0'; pnt++) {
+	if (*pnt == '/') depth1++;
+    }
+    for (pnt = fn2; *pnt != '\0'; pnt++) {
+	if (*pnt == '/') depth2++;
+    }
+    if (depth1 != depth2) {
+	return depth1 - depth2;
+    }
+    return strcmp(fn1, fn2);
+}
+
+/* site_sorted_files_list sorts every file in the site; a file which
+ * has no stored state has no stored filename, so order those first
+ * rather than dereferencing a null pointer. */
+static int compare_dir_stored(const void *f1, const void *f2)
+{
+    const char *fn1 = (*(struct site_file **) f1)->stored.filename;
+    const char *fn2 = (*(struct site_file **) f2)->stored.filename;
+
+    if (fn1 == NULL || fn2 == NULL) {
+	return (fn1 == NULL) - (fn2 == NULL);
+    }
+    return compare_dir_depth(fn1, fn2);
+}
+
+static int compare_dir_local(const void *f1, const void *f2)
+{
+    const char *fn1 = (*(struct site_file **) f1)->local.filename;
+    const char *fn2 = (*(struct site_file **) f2)->local.filename;
+
+    if (fn1 == NULL || fn2 == NULL) {
+	return (fn1 == NULL) - (fn2 == NULL);
+    }
+    return compare_dir_depth(fn1, fn2);
+}
+
 static int synch_create_directories(struct site *site)
 {
-    struct site_file *current;
+    struct site_file *current, **dirs;
+    unsigned numdirs, n, i;
     char *full_local;
     int ret;
-    
-    ret = 0;
-    
-    for_each_file(current, site) {
-	if ((current->type==file_dir) && (current->diff==file_deleted)) {
-	    full_local = file_full_local(&current->stored, site);
-	    fe_synching(current);
-	    if (mkdir(full_local, 0755) == 0) {
-		fe_synched(current, true, NULL);
-	    } else {
-		ret = 1;
-		fe_synched(current, false, strerror(errno));
-		file_downloaded(current, site);
-	    }
-	    free(full_local);
+
+    /* The files list does not guarantee that a directory comes
+     * after its parent, so create the directories in order of
+     * path depth, shallowest first. */
+    dirs = site_sorted_files_list(site, NULL, compare_dir_stored, &numdirs);
+
+    /* The sorted list covers every file in the site; keep only
+     * the directories which are to be created. */
+    n = 0;
+    for (i = 0; i < numdirs; i++) {
+	if ((dirs[i]->type==file_dir) && (dirs[i]->diff==file_deleted)) {
+	    dirs[n++] = dirs[i];
 	}
     }
+    numdirs = n;
+
+    ret = 0;
+    if (numdirs == 0) {
+	free(dirs);
+	return ret;
+    }
+
+    for (n = 0; n < numdirs; n++) {
+	current = dirs[n];
+	full_local = file_full_local(&current->stored, site);
+	fe_synching(current);
+	if (mkdir(full_local, 0755) == 0) {
+	    fe_synched(current, true, NULL);
+	} else {
+	    ret = 1;
+	    fe_synched(current, false, strerror(errno));
+	    file_downloaded(current, site);
+	}
+	free(full_local);
+    }
+
+    free(dirs);
     return ret;
 }
 
@@ -315,16 +380,32 @@ file_retrieve_server(struct site_file *file, struct site *site, void *session)
 /* Create new directories and change permissions on existing directories. */
 static int update_create_directories(struct site *site, void *session)
 {
-    struct site_file *current;
+    struct site_file *current, **dirs;
+    unsigned numdirs, n, i;
     int ret = 0;
 
-    for_each_file(current, site) {
-	if ((current->type == file_dir) 
-            && (current->diff == file_new || current->diff == file_changed)) {
-	    /* New or changed directory! */
+    /* As in synch_create_directories, create the directories
+     * shallowest first, since the files list does not guarantee a
+     * directory comes after its parent. */
+    dirs = site_sorted_files_list(site, NULL, compare_dir_local, &numdirs);
+
+    /* The sorted list covers every file in the site; keep only
+     * the directories which are to be created or updated. */
+    n = 0;
+    for (i = 0; i < numdirs; i++) {
+	if ((dirs[i]->type == file_dir)
+            && (dirs[i]->diff == file_new || dirs[i]->diff == file_changed)) {
+	    dirs[n++] = dirs[i];
+	}
+    }
+    numdirs = n;
+
+    if (numdirs > 0) {
+	for (n = 0; n < numdirs; n++) {
 	    char *full_remote;
             int oret;
 
+	    current = dirs[n];
 	    if (!fe_can_update(current)) continue;
 
 	    full_remote = file_full_remote(&current->local, site);
@@ -361,6 +442,7 @@ static int update_create_directories(struct site *site, void *session)
 	}
     }
 
+    free(dirs);
     return ret;
 }
 
@@ -1078,7 +1160,7 @@ int site_fetch(struct site *site)
     void *session;
     const char *dirstack[DIRSTACKSIZE];
     size_t dirtop;
-    struct proto_file *files = NULL;
+    struct proto_file *files = NULL, *filestail = NULL;
 
     ret = proto_init(site, &session);
     if (ret != SITE_OK) {
@@ -1129,8 +1211,15 @@ int site_fetch(struct site *site)
         }
 
         if (lastf) {
-            lastf->next = files;
-            files = newfiles;
+            /* Append the listing: a directory is always listed
+             * after its parent, so this keeps parents before
+             * children in the accumulated list. */
+            if (filestail == NULL) {
+                files = newfiles;
+            } else {
+                filestail->next = newfiles;
+            }
+            filestail = lastf;
         }
 
         ne_free(curdir);
